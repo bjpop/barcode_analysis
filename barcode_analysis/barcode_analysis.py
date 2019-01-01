@@ -6,24 +6,21 @@ License     : MIT
 Maintainer  : bjpope@unimelb.edu.au 
 Portability : POSIX
 
-The program reads one or more input FASTA files. For each file it computes a
-variety of statistics, and then prints a summary of the statistics as output.
 '''
 
 from argparse import ArgumentParser
-from math import floor
 import sys
 import logging
 import pkg_resources
+import pysam
 from Bio import SeqIO
+import gzip
+import csv
 
 
 EXIT_FILE_IO_ERROR = 1
 EXIT_COMMAND_LINE_ERROR = 2
-EXIT_FASTA_FILE_ERROR = 3
-DEFAULT_MIN_LEN = 0
 DEFAULT_VERBOSE = False
-HEADER = 'FILENAME\tNUMSEQ\tTOTAL\tMIN\tAVG\tMAX'
 PROGRAM_NAME = "barcode_analysis"
 
 
@@ -55,12 +52,13 @@ def parse_args():
     description = 'Read one or more FASTA files, compute simple stats for each file'
     parser = ArgumentParser(description=description)
     parser.add_argument(
-        '--minlen',
-        metavar='N',
-        type=int,
-        default=DEFAULT_MIN_LEN,
-        help='Minimum length sequence to include in stats (default {})'.format(
-            DEFAULT_MIN_LEN))
+        '--coords',
+        type=str,
+        help='File containing coordiates of genomic regions in bed format')
+    parser.add_argument(
+        '--barcodes',
+        type=str,
+        help='File containing read barcodes in FASTQ format')
     parser.add_argument('--version',
                         action='version',
                         version='%(prog)s ' + PROGRAM_VERSION)
@@ -68,137 +66,11 @@ def parse_args():
                         metavar='LOG_FILE',
                         type=str,
                         help='record program progress in LOG_FILE')
-    parser.add_argument('fasta_files',
-                        nargs='*',
-                        metavar='FASTA_FILE',
+    parser.add_argument('bam_file',
+                        metavar='BAM_FILE',
                         type=str,
-                        help='Input FASTA files')
+                        help='Input BAM file')
     return parser.parse_args()
-
-
-class FastaStats(object):
-    '''Compute various statistics for a FASTA file:
-
-    num_seqs: the number of sequences in the file satisfying the minimum
-       length requirement (minlen_threshold).
-    num_bases: the total length of all the counted sequences.
-    min_len: the minimum length of the counted sequences.
-    max_len: the maximum length of the counted sequences.
-    average: the average length of the counted sequences rounded down
-       to an integer.
-    '''
-    #pylint: disable=too-many-arguments
-    def __init__(self,
-                 num_seqs=None,
-                 num_bases=None,
-                 min_len=None,
-                 max_len=None,
-                 average=None):
-        "Build an empty FastaStats object"
-        self.num_seqs = num_seqs
-        self.num_bases = num_bases
-        self.min_len = min_len
-        self.max_len = max_len
-        self.average = average
-
-    def __eq__(self, other):
-        "Two FastaStats objects are equal iff their attributes are equal"
-        if type(other) is type(self):
-            return self.__dict__ == other.__dict__
-        return False
-
-    def __repr__(self):
-        "Generate a printable representation of a FastaStats object"
-        return "FastaStats(num_seqs={}, num_bases={}, min_len={}, max_len={}, " \
-            "average={})".format(
-                self.num_seqs, self.num_bases, self.min_len, self.max_len,
-                self.average)
-
-    def from_file(self, fasta_file, minlen_threshold=DEFAULT_MIN_LEN):
-        '''Compute a FastaStats object from an input FASTA file.
-
-        Arguments:
-           fasta_file: an open file object for the FASTA file
-           minlen_threshold: the minimum length sequence to consider in
-              computing the statistics. Sequences in the input FASTA file
-              which have a length less than this value are ignored and not
-              considered in the resulting statistics.
-        Result:
-           A FastaStats object
-        '''
-        num_seqs = num_bases = 0
-        min_len = max_len = None
-        for seq in SeqIO.parse(fasta_file, "fasta"):
-            this_len = len(seq)
-            if this_len >= minlen_threshold:
-                if num_seqs == 0:
-                    min_len = max_len = this_len
-                else:
-                    min_len = min(this_len, min_len)
-                    max_len = max(this_len, max_len)
-                num_seqs += 1
-                num_bases += this_len
-        if num_seqs > 0:
-            self.average = int(floor(float(num_bases) / num_seqs))
-        else:
-            self.average = None
-        self.num_seqs = num_seqs
-        self.num_bases = num_bases
-        self.min_len = min_len
-        self.max_len = max_len
-        return self
-
-    def pretty(self, filename):
-        '''Generate a pretty printable representation of a FastaStats object
-        suitable for output of the program. The output is a tab-delimited
-        string containing the filename of the input FASTA file followed by
-        the attributes of the object. If 0 sequences were read from the FASTA
-        file then num_seqs and num_bases are output as 0, and min_len, average
-        and max_len are output as a dash "-".
-
-        Arguments:
-           filename: the name of the input FASTA file
-        Result:
-           A string suitable for pretty printed output
-        '''
-        if self.num_seqs > 0:
-            num_seqs = str(self.num_seqs)
-            num_bases = str(self.num_bases)
-            min_len = str(self.min_len)
-            average = str(self.average)
-            max_len = str(self.max_len)
-        else:
-            num_seqs = num_bases = "0"
-            min_len = average = max_len = "-"
-        return "\t".join([filename, num_seqs, num_bases, min_len, average,
-                          max_len])
-
-
-def process_files(options):
-    '''Compute and print FastaStats for each input FASTA file specified on the
-    command line. If no FASTA files are specified on the command line then
-    read from the standard input (stdin).
-
-    Arguments:
-       options: the command line options of the program
-    Result:
-       None
-    '''
-    if options.fasta_files:
-        for fasta_filename in options.fasta_files:
-            logging.info("Processing FASTA file from %s", fasta_filename)
-            try:
-                fasta_file = open(fasta_filename)
-            except IOError as exception:
-                exit_with_error(str(exception), EXIT_FILE_IO_ERROR)
-            else:
-                with fasta_file:
-                    stats = FastaStats().from_file(fasta_file, options.minlen)
-                    print(stats.pretty(fasta_filename))
-    else:
-        logging.info("Processing FASTA file from stdin")
-        stats = FastaStats().from_file(sys.stdin, options.minlen)
-        print(stats.pretty("stdin"))
 
 
 def init_logging(log_filename):
@@ -223,12 +95,56 @@ def init_logging(log_filename):
         logging.info('command line: %s', ' '.join(sys.argv))
 
 
+def read_barcodes(filename):
+    barcodes = {}
+    with gzip.open(filename, "rt") as file:
+        for seq in SeqIO.parse(file, "fastq"):
+            barcodes[seq.id] = str(seq.seq)
+    return barcodes
+
+
+def read_coords(filename):
+    coords = {}
+    with open(filename) as file:
+        reader = csv.reader(file, delimiter='\t')
+        for row in reader:
+            if len(row) == 4:
+                chrom, start, end, name = row
+                coords[(chrom, int(start), int(end))] = name
+    return coords 
+
+
+header = "NAME,NUM_READS,NUM_BARCODES,NUM_BARCODES/NUM_READS,NUM_HITS,NUM_MISSES"
+
+
+def read_bam(barcodes, coords, filename):
+    samfile = pysam.AlignmentFile(filename, "rb")
+    print(header)
+    for (chrom, start, end), name in coords.items():
+        num_reads = 0
+        num_hits = 0
+        num_misses = 0
+        seen_barcodes = set() 
+        for read in samfile.fetch(chrom, start, end):
+            num_reads += 1
+            if read.query_name in barcodes:
+                num_hits += 1
+                this_barcode = barcodes[read.query_name]
+                seen_barcodes.add(this_barcode)
+            else:
+                num_misses += 1
+        num_barcodes = len(seen_barcodes)
+        print("{},{},{},{},{},{}".format(name, num_reads, num_barcodes, num_barcodes/num_reads, num_hits, num_misses))
+                
+
+
 def main():
     "Orchestrate the execution of the program"
     options = parse_args()
     init_logging(options.log)
-    print(HEADER)
-    process_files(options)
+    barcodes = read_barcodes(options.barcodes)
+    coords = read_coords(options.coords)
+    read_bam(barcodes, coords, options.bam_file)
 
 
 # If this script is run from the command line then call the main function.
