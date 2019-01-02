@@ -120,21 +120,28 @@ header = "NAME,NUM_READS,NUM_BARCODES,NUM_BARCODES/NUM_READS,NUM_HITS,NUM_MISSES
 def read_bam(barcodes, coords, filename):
     samfile = pysam.AlignmentFile(filename, "rb")
     print(header)
+    barcode_sequences = {}
+    count = 0
     for (chrom, start, end), name in coords.items():
-        num_reads = 0
-        num_hits = 0
-        num_misses = 0
         seen_barcodes = set() 
         for read in samfile.fetch(chrom, start, end):
-            num_reads += 1
-            if read.query_name in barcodes:
-                num_hits += 1
-                this_barcode = barcodes[read.query_name]
-                seen_barcodes.add(this_barcode)
-            else:
-                num_misses += 1
-        num_barcodes = len(seen_barcodes)
-        print("{},{},{},{},{},{}".format(name, num_reads, num_barcodes, num_barcodes/num_reads, num_hits, num_misses))
+            this_seq = read.query_sequence
+            this_id = read.query_name
+            if this_id in barcodes:
+                this_barcode = barcodes[this_id]
+            if this_barcode not in barcode_sequences:
+                barcode_sequences[this_barcode] = set()
+            barcode_sequences[this_barcode].add(this_seq)
+            count += 1
+            if count >= 100000:
+                break
+    for barcode, seqs in barcode_sequences.items():
+        print("{}".format(barcode))
+        for s in seqs:
+            print(s)
+
+        #num_barcodes = len(seen_barcodes)
+        #print("{},{},{},{},{},{}".format(name, num_reads, num_barcodes, num_barcodes/num_reads, num_hits, num_misses))
                 
 
 
